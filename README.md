@@ -148,6 +148,40 @@ Assumed, not yet tested:
 ## Next Module
 **Module 2 — dbt Fundamentals on BigQuery** — staging and marts models, first working ELT pipeline.
 
-![Lineage Graph](assets/module2_lineage.png)
 
-![Lineage Graph](assets/module2_lineage.png)
+
+---
+
+# Module 2 — dbt Fundamentals on BigQuery
+
+![dbt](https://img.shields.io/badge/dbt-Fundamentals-FF694B?style=for-the-badge&logo=dbt&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)
+
+First working ELT pipeline: raw BigQuery public data transformed through staging into a business-ready mart table.
+
+## Pipeline Lineage
+
+
+## Models Built
+
+| Layer | Model | Purpose |
+|---|---|---|
+| Staging | stg_orders | Cleaned order records from raw source |
+| Staging | stg_users | Cleaned user records from raw source |
+| Staging | stg_order_items | Cleaned order line items from raw source |
+| Mart | fct_orders | Joined, business-ready order fact table with total value |
+
+## Self-Check: Tested vs Assumed
+
+Tested:
+- [x] All 3 staging models build successfully as views
+- [x] fct_orders correctly joins staging models via ref, dbt-managed dependency graph
+- [x] 13 of 13 data tests pass, unique and not_null on key columns
+- [x] Lineage graph confirms correct dependency order
+
+Assumed, not yet tested:
+- [ ] Incremental materialization, all models are full-refresh views so far
+- [ ] Behavior on schema drift if source table columns change
+
+## Next Module
+**Module 3 — Data Modeling: Dimensional Design** — star schema and SCD Type 2 snapshots.
