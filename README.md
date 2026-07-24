@@ -147,3 +147,7 @@ Assumed, not yet tested:
 
 ## Next Module
 **Module 2 — dbt Fundamentals on BigQuery** — staging and marts models, first working ELT pipeline.
+
+![Lineage Graph](assets/module2_lineage.png)
+
+![Lineage Graph](assets/module2_lineage.png)
