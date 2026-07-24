@@ -161,6 +161,8 @@ First working ELT pipeline: raw BigQuery public data transformed through staging
 
 ## Pipeline Lineage
 
+![Lineage Graph](assets/module2_lineage.png)
+
 
 ## Models Built
 
