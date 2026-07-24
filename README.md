@@ -95,3 +95,55 @@ sequenceDiagram
 
 ## ➡️ Next Module
 **Module 1 — Advanced SQL for Analytics Engineering** — window functions, CTEs, and incremental-query patterns against a public BigQuery dataset.
+
+---
+
+# Module 1 — Advanced SQL for Analytics Engineering
+
+![SQL](https://img.shields.io/badge/SQL-Advanced-4285F4?style=for-the-badge&logo=googlebigquery&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)
+
+Practiced against `bigquery-public-data.thelook_ecommerce.orders` — a public e-commerce dataset. Full queries in `sql/module1_advanced_sql.sql`.
+
+## Concepts Covered
+
+```mermaid
+mindmap
+  root((Advanced SQL))
+    Window Functions
+      COUNT OVER PARTITION
+      Per-user sequencing
+    Running Totals
+      SUM OVER
+      ROWS BETWEEN
+    Deduplication
+      ROW_NUMBER
+      QUALIFY filter
+    Aggregation
+      Monthly cohorts
+      GROUP BY and EXTRACT
+```
+
+## Query Summary
+
+| # | Concept | What It Solves |
+|---|---|---|
+| 1 | Basic exploration | Understand raw table shape and columns |
+| 2 | Window function COUNT OVER | Number each user's orders in sequence |
+| 3 | Running total SUM OVER | Cumulative items ordered per user, over time |
+| 4 | Dedup ROW_NUMBER plus QUALIFY | Isolate latest order per user, reused in dbt staging models |
+| 5 | Monthly aggregation | Cohort-style breakdown by year, month, status |
+
+## Self-Check: Tested vs Assumed
+
+Tested:
+- [x] All 5 queries return correct, verified results against the public dataset
+- [x] QUALIFY correctly filters window function output, not possible with plain WHERE
+- [x] Running total values manually spot-checked against raw num_of_item values
+
+Assumed, not yet tested:
+- [ ] Query performance and cost at production-scale row counts, millions plus rows
+- [ ] Behavior with NULL values in partition or order columns, not encountered in this sample
+
+## Next Module
+**Module 2 — dbt Fundamentals on BigQuery** — staging and marts models, first working ELT pipeline.
