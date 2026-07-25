@@ -266,4 +266,103 @@ Assumed, not yet tested:
 - [ ] dim_date coverage beyond 2026 if the source data range extends further
 
 ## Next Module
-**Module 4** — TBD
+**Module 4 — Orchestration with Dagster**
+
+[![Dagster](https://img.shields.io/badge/Dagster-6E43E8?style=for-the-badge&logo=dagster&logoColor=white)](https://camo.githubusercontent.com/) [![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white)](https://camo.githubusercontent.com/) [![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)](https://camo.githubusercontent.com/)
+
+The Module 2/3 dbt project wrapped in a Dagster orchestration layer: scheduled runs, freshness observability, and real Slack alerting on failure.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph dbt["🏗️ dbt Project"]
+        M["9 models<br/>28 tests"]
+    end
+
+    subgraph Dagster["🎛️ Dagster Orchestration"]
+        A["📦 dbt Assets<br/>dagster-dbt wrap"]
+        S["⏰ Schedule<br/>daily 06:00 UTC"]
+        F["📈 FreshnessPolicy<br/>26h tolerance"]
+        RS["🚨 run_failure_sensor"]
+    end
+
+    subgraph Alert["🔔 Alerting"]
+        SL["💬 Slack #new-channel"]
+    end
+
+    M -->|wrapped as| A
+    S -->|triggers| A
+    A -->|tracked by| F
+    A -->|on FAILURE| RS
+    RS -->|POST webhook| SL
+
+    style dbt fill:#FF694B,stroke:#333,color:#fff
+    style Dagster fill:#F3F0FF,stroke:#6E43E8,stroke-width:2px
+    style Alert fill:#ECE4F7,stroke:#4A154B,stroke-width:2px
+    style A fill:#6E43E8,stroke:#333,color:#fff
+    style S fill:#8B6EF0,stroke:#333,color:#fff
+    style F fill:#8B6EF0,stroke:#333,color:#fff
+    style RS fill:#E8433E,stroke:#333,color:#fff
+    style SL fill:#4A154B,stroke:#333,color:#fff
+```
+
+## Induced-Failure Self-Check
+
+```mermaid
+sequenceDiagram
+    participant Dev as 👩‍💻 Developer
+    participant Model as 🏗️ stg_orders.sql
+    participant Dag as 🎛️ Dagster
+    participant BQ as ☁️ BigQuery
+    participant Slack as 💬 Slack
+
+    Dev->>Model: typo order_id → order_idd
+    Dev->>Dag: Materialize all 9 assets
+    Dag->>BQ: run stg_orders
+    BQ-->>Dag: ❌ column not found
+    Dag-->>Dag: fct_orders, fct_order_items fail (propagation)
+    Dag->>Slack: 🚨 run_failure_sensor fires
+    Slack-->>Dev: "dbt run failed: run_id=8aab9e24"
+    Dev->>Model: revert typo
+    Dev->>Dag: Materialize again
+    Dag->>BQ: run all 9 models
+    BQ-->>Dag: ✅ all pass
+```
+
+## What's Working
+
+| Component | Status | Verified By |
+|---|---|---|
+| 🎛️ dagster-dbt integration | ✅ Working | All 9 assets materialize via Dagster, not raw dbt |
+| ⏰ Daily schedule | ✅ Enabled | Toggled ON in UI, `materialize_dbt_models_schedule` |
+| 📈 Freshness observability | ✅ Working | Asset detail page shows "Passing" state |
+| 🚨 Slack alert on failure | ✅ Working | Real message received: run_id `8aab9e24` |
+| 🔁 Failure → fix → pass cycle | ✅ Verified | Run `8aab9e24` (fail) → Run `94bd25d5` (pass) |
+
+## 🔍 Self-Check: Tested vs Assumed
+
+**✅ Tested:**
+
+- [x] dbt project wrapped as native Dagster assets via `dagster-dbt`, all 9 models visible and materializable in UI
+- [x] Daily schedule defined and enabled (cron `0 6 * * *`)
+- [x] Freshness tracked via `FreshnessPolicy` (new API) — confirmed "Passing" state on a live asset after materialization
+- [x] Induced failure (typo'd column) correctly failed `stg_orders` and cascaded to `fct_orders`/`fct_order_items`, while unrelated assets stayed green
+- [x] `run_failure_sensor` fired a real Slack webhook message on failure, confirmed in-channel
+- [x] Revert-and-repass confirmed with a second clean run (paired run IDs as evidence)
+- [x] Concurrent-run behavior tested (not assumed) — two back-to-back materialize triggers exposed a real race condition: `DbtProject.prepare_if_dev()` running twice simultaneously briefly left `dbt_packages/` in an inconsistent state, failing one run with "0 package(s) installed." This happened despite `dagster_dbt`'s own `run_with_concurrent_update_guard` — a genuine limitation, not a VM issue
+
+**⚠️ Assumed (not yet tested):**
+
+- [ ] Backfill behavior across multiple missed schedule windows — not triggered in this project
+- [ ] Fix for the concurrent-run race condition above — documented as a known limitation, not patched (out of scope for this module)
+
+## Notes on the Build
+
+- `dagster-dbt`'s factory functions (`build_last_update_freshness_checks`, `build_sensor_for_freshness_checks`) turned out to be superseded by a newer `FreshnessPolicy`/`apply_freshness_policy` API in this Dagster version (1.13.15) — migrated to the new pattern after hitting a `SupersessionWarning`.
+- Both the dbt CLI resource and the project's dbt-project object needed an explicit profiles directory configured — the dbt profile lives outside the project folder in this setup.
+- Two local `dagster dev` crashes during testing were traced to local machine memory pressure (swap near capacity, limited available RAM) rather than an application defect — resolved by restarting; a permanent fix (increasing available memory) is still pending.
+
+## Next Module
+
+**Module 5** — TBD
