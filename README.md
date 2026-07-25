@@ -187,3 +187,83 @@ Assumed, not yet tested:
 
 ## Next Module
 **Module 3 — Data Modeling: Dimensional Design** — star schema and SCD Type 2 snapshots.
+
+---
+
+# Module 3 — Data Modeling: Dimensional Design
+
+![dbt](https://img.shields.io/badge/dbt-Snapshots-FF694B?style=for-the-badge&logo=dbt&logoColor=white)
+![BigQuery](https://img.shields.io/badge/BigQuery-Star%20Schema-4285F4?style=for-the-badge&logo=googlebigquery&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)
+
+Star schema built on top of Module 2's staging layer, with SCD Type 2 change tracking via dbt snapshots.
+
+## Star Schema
+
+```mermaid
+erDiagram
+    fct_orders }o--|| dim_users : user_key
+    fct_orders }o--|| dim_date : order_date_key
+    fct_order_items }o--|| dim_users : user_key
+    fct_order_items }o--|| dim_products : product_key
+    fct_order_items }o--|| dim_date : order_date_key
+    fct_order_items }o--|| fct_orders : order_id
+
+    dim_users {
+        string user_key PK
+        string user_id
+        string city
+        boolean is_current
+    }
+    dim_products {
+        string product_key PK
+        string product_id
+        string category
+    }
+    dim_date {
+        date date_key PK
+    }
+    fct_orders {
+        string order_id PK
+        string user_key FK
+        date order_date_key FK
+    }
+    fct_order_items {
+        string order_item_id PK
+        string user_key FK
+        string product_key FK
+        date order_date_key FK
+    }
+```
+
+## Models Built
+
+| Layer | Model | Purpose |
+|---|---|---|
+| Snapshot | users_snapshot | SCD Type 2 change tracking on users (check strategy) |
+| Dimension | dim_users | Surrogate key, current + historical user attributes |
+| Dimension | dim_products | Surrogate key, static product attributes |
+| Dimension | dim_date | Calendar spine, 2019–2026 |
+| Fact | fct_orders | Order grain — 1 row per order |
+| Fact | fct_order_items | Line-item grain — 1 row per order item, carries product_key |
+
+## Design Decisions
+
+- **fct_orders vs fct_order_items split**: an order can contain multiple products, so `product_key` cannot live on the order-grain fact without breaking grain. Product-level analysis goes through `fct_order_items` instead.
+- **SCD2 fan-out guard**: joins from fact tables to `dim_users` filter on `is_current = true` to prevent duplicate rows if a user's tracked attributes ever change.
+- **check strategy over timestamp**: source table has no `updated_at` column, so snapshot uses `check_cols` on the fields most likely to change (address, traffic_source) rather than a blanket column check.
+
+## Self-Check: Tested vs Assumed
+
+Tested:
+- [x] Snapshot correctly captures dbt_valid_from/dbt_valid_to on first run
+- [x] Found and fixed a source data-quality issue — city column held the literal string "null" for ~5% of Brazil rows, silently bypassing IS NULL checks
+- [x] All fact-to-dimension joins verified for null foreign keys (0 nulls on user_key, product_key, date_key)
+- [x] 19 of 19 data tests pass across staging, dimensions, and facts
+
+Assumed, not yet tested:
+- [ ] SCD2 behavior on an actual attribute change — source data is static, so a second snapshot run producing a new row version hasn't been observed yet
+- [ ] dim_date coverage beyond 2026 if the source data range extends further
+
+## Next Module
+**Module 4** — TBD
