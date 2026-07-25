@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: dim_users
+    description: "SCD Type 2 dimension for users, sourced from users_snapshot. Note: source city field contains literal string 'null' for ~5% of Brasil rows — handled via nullif."
+    columns:
+      - name: user_key
+        tests:
+          - unique
+          - not_null
+      - name: user_id
+        tests:
+          - not_null
