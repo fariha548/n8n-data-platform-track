@@ -33,6 +33,25 @@ jobs:
       - name: dbt deps
         run: dbt deps
 
+      - name: Create profiles.yml
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << 'PROFILE'
+          my_project:
+            outputs:
+              ci:
+                type: bigquery
+                method: oauth
+                project: n8n-self-practice
+                dataset: dbt_ci
+                location: US
+                threads: 4
+                job_execution_timeout_seconds: 300
+                job_retries: 1
+                priority: interactive
+            target: ci
+          PROFILE
+
       - name: dbt compile (generate manifest.json)
         run: dbt compile --target ci
 
