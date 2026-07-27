@@ -63,10 +63,17 @@ jobs:
         continue-on-error: true
 
       - name: dbt build (state:modified+)
+        env:
+          DBT_CI_SCHEMA_SUFFIX: pr${{ github.event.pull_request.number }}
         run: |
           if [ -f state/manifest.json ]; then
-            dbt build --select state:modified+ --target ci --state state
+            dbt build --select state:modified+ --target ci --state state --defer
           else
             echo "No baseline manifest found, running full build"
             dbt build --target ci
           fi
+
+      - name: Cleanup - delete temporary PR dataset
+        if: always()
+        run: |
+          bq rm -r -f -d n8n-self-practice:dbt_ci_pr${{ github.event.pull_request.number }} || true
