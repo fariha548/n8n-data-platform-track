@@ -1,4 +1,4 @@
-SELECT
+SELET
   order_id,
   user_id,
   status,
