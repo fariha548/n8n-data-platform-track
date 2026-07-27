@@ -266,7 +266,7 @@ Assumed, not yet tested:
 - [ ] dim_date coverage beyond 2026 if the source data range extends further
 
 ## Next Module
-**Module 4 — Orchestration with Dagster**
+# Module 4 — Orchestration with Dagster
 
 [![Dagster](https://img.shields.io/badge/Dagster-6E43E8?style=for-the-badge&logo=dagster&logoColor=white)](https://camo.githubusercontent.com/) [![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white)](https://camo.githubusercontent.com/) [![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)](https://camo.githubusercontent.com/)
 
@@ -365,4 +365,81 @@ sequenceDiagram
 
 ## Next Module
 
-**Module 5** — TBD
+# Module 5 — Gemini-Enrichment Ingestion Pipeline
+![Status](https://img.shields.io/badge/status-complete-brightgreen)
+
+A custom ingestion pipeline that pulls unprocessed records from BigQuery, enriches them via the Gemini API (structured JSON output), validates the response, dedups against prior runs, and lands results in BigQuery — orchestrated as a Dagster asset upstream of the Module 2/3 dbt project.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[raw.pending_enrichment] -->|fetch rows| B[gemini_enriched_records<br/>Dagster asset - main venv]
+    B -->|JSON via stdin| C[gemini_batch_runner.py<br/>subprocess - venv-gemini]
+    C -->|call_gemini| D[Gemini API<br/>gemini-3.5-flash]
+    D -->|structured JSON| C
+    C -->|validate + dedup| E{Valid and new?}
+    E -->|yes| F[raw.gemini_enriched]
+    E -->|no| G[raw.failed_llm_calls]
+    C -->|JSON via stdout| B
+    B -->|metadata + failure-rate check| H[Dagster UI]
+```
+
+**Why a subprocess bridge, not a direct import:** the Gemini SDK (`google-genai`) requires `protobuf>=3.20,<6`, while `dbt-core` in this project requires `protobuf>=6`. Both packages can't coexist in one virtual environment - verified directly (not assumed) by hitting a real pip dependency-resolution conflict. Fix: two separate venvs (`venv` for dbt/Dagster, `venv-gemini` for the Gemini SDK), bridged via `subprocess.run()` passing records as JSON over stdin/stdout.
+
+## Sequence - one record through the pipeline
+
+```mermaid
+sequenceDiagram
+    participant D as Dagster asset (main venv)
+    participant R as gemini_batch_runner.py (venv-gemini)
+    participant G as Gemini API
+    participant BQ as BigQuery
+
+    D->>BQ: SELECT id, text FROM raw.pending_enrichment
+    D->>R: subprocess.run(records as JSON via stdin)
+    R->>G: generate_content(response_schema=EnrichmentResult)
+    G-->>R: structured JSON
+    R->>R: Pydantic validate
+    alt valid and new
+        R->>BQ: INSERT INTO raw.gemini_enriched
+    else invalid or duplicate
+        R->>BQ: INSERT INTO raw.failed_llm_calls (or skip)
+    end
+    R-->>D: summary JSON via stdout
+    D->>D: add_output_metadata + failure-rate check
+```
+
+## What's Working
+
+| Component | Status | Verified By |
+|---|---|---|
+| Gemini API auth | Working | Live call, key confirmed via client.models.generate_content |
+| Structured output (response_schema) | Working | Real Gemini response parsed into EnrichmentResult without manual JSON parsing |
+| Idempotent dedup | Working | Same input_id/text re-run returned skipped_duplicate, no duplicate row |
+| Retry/backoff (transient errors) | Working | tenacity exponential backoff wired for 429/timeout/503/UNAVAILABLE |
+| Fatal-error handling (batch-wide) | Working | Invalid API key correctly raised GeminiFatalError, halted process_batch cleanly |
+| Schema validation | Working | Two malformed-response cases both routed to raw.failed_llm_calls |
+| Cross-venv subprocess bridge | Working | Standalone test and full Dagster UI materialize both succeeded |
+| Dagster asset (gemini_enriched_records) | Working | Materialized via UI, metadata shows inserted=3, skipped_duplicate=0, failed_validation=0, failed_api=0 |
+
+## Self-Check: Tested vs Assumed
+
+**Tested:**
+- Deprecated SDK caught live, not assumed - google.generativeai raised a FutureWarning and gemini-1.5-flash 404'd; migrated to google-genai SDK with gemini-3.5-flash, re-verified with a live auth call
+- Dedup key is sha256(input_id + text), NOT the Gemini output - deliberately, since Gemini's output is non-deterministic across calls
+- Auth/permission/quota errors are treated as fatal (halt the whole batch), while per-record content issues are logged individually - confirmed both paths behave differently via separate induced tests
+- Real end-to-end run through the actual Dagster UI processed 3 real records with zero errors
+
+**Assumed (not yet tested):**
+- Behavior at production call volume / real Gemini rate-limit thresholds - only tested with a 3-record batch
+- Concurrent Dagster runs of this asset specifically (Module 4 found a real race condition in the dbt asset under concurrent materialization)
+- Cost per run at scale - not yet calculated or budgeted
+
+## Notes on the Build
+- dbt-core requires protobuf>=6, the Gemini SDK requires protobuf<6 - a hard, unresolvable conflict in one venv, not a version-pinning issue. Two venvs + subprocess bridge was the correct fix.
+- The subprocess contract keeps stdout reserved for a single JSON object (the summary); all logging is redirected to stderr in gemini_batch_runner.py.
+- gemini_ingestion.py calls load_dotenv() explicitly rather than relying on shell environment, since it now runs both as a directly-imported module and as a subprocess invoked by Dagster with its own working directory.
+
+## Next Module
+**Module 6** — TBD
