@@ -1,0 +1,53 @@
+name: dbt Slim CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+jobs:
+  slim-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt
+        run: pip install dbt-bigquery
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: Download main branch manifest
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: store-manifest.yml
+          branch: main
+          name: dbt-manifest-main
+          path: state
+        continue-on-error: true
+
+      - name: dbt build (state:modified+)
+        run: |
+          if [ -f state/manifest.json ]; then
+            dbt build --select state:modified+ --target ci --state state
+          else
+            echo "No baseline manifest found, running full build"
+            dbt build --target ci
+          fi
