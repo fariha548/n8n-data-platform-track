@@ -10,3 +10,4 @@ SELECT
   country,
   created_at
 FROM {{ source('thelook_ecommerce', 'users') }}
+-- concurrent retest A v3
