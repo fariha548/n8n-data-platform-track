@@ -504,5 +504,48 @@ PRs rebuild only what changed (`state:modified+`), in an isolated temporary sche
 - The first version of `store-manifest.yml` used `dbt compile` (SQL generation only, no tables created), which silently meant the baseline dataset never had a full build — this only surfaced under the concurrency test, not from local testing.
 - The CI service account was initially scoped read-only on `snapshots`, which broke dbt's snapshot write step — corrected after a real failure.
 
+# Module 7 — LLM Pipeline Hardening
+
+This module hardens the Gemini enrichment pipeline built in Module 5 --
+adding cost/latency controls, a human-review gate for low-confidence
+output, adversarial input test coverage, and a formal threat model. Not
+a rebuild of Module 5; a security/reliability layer on top of it.
+
+## Architecture
+
+Flow inside gemini_ingestion.py (runs in venv-gemini):
+
+    process_record(record, tracker)
+      -> tracker.check_before_call()   # blocks BEFORE any API spend if budget exhausted
+      -> call_gemini(record)           # returns (raw, input_tokens, output_tokens)
+      -> tracker.record_call(...)      # logs cost/latency to raw.llm_cost_log
+      -> if confidence < 0.7:
+           write_to_review_queue()     # raw.hitl_review_queue
+         else:
+           write_success()             # raw.gemini_enriched (existing Module 5 path)
+
+cost_tracker.py is duplicated in both my_project/ (imported by
+gemini_ingestion.py, venv-gemini) and orchestration/orchestration/
+(available to the Dagster asset's venv) -- kept manually in sync, not
+a package, since the two venvs can't share an editable install without
+reintroducing the protobuf conflict Module 5 already worked around.
+
+## Self-Check: Tested vs. Assumed
+
+| Behavior | Status |
+|---|---|
+| Cost/latency logged per Gemini call to raw.llm_cost_log | Tested -- real row confirmed via bq query, correct token counts and cost |
+| Budget ceiling blocks the NEXT API call before it happens, once exhausted | Tested -- forced via manual tracker.total_cost_usd override, confirmed BudgetExceededError raised, no API call made |
+| Low-confidence output routed to raw.hitl_review_queue instead of gemini_enriched | Tested -- forced via monkeypatched call_gemini returning confidence 0.3, confirmed queued_for_review status and real row insert |
+| Gemini's self-reported confidence score is a reliable signal | Not assumed reliable -- observed high confidence on deliberately garbage input during testing; documented as a known limitation, not fixed |
+| Adversarial inputs (prompt injection, oversized text, SQL-looking strings) handled safely | Tested -- 7 real tests against live process_record, all passing. One run hit a free-tier rate limit (429, 5 req/min) which raised GeminiFatalError as designed -- confirmed as a rate-limit, not a logic bug, by retrying after cooldown |
+| raw.failed_llm_calls.raw_response redacted before storage | Tested -- regex-based redact_pii() for emails/phones, wired into write_failure(), confirmed via real schema-validation-failure path. Partial mitigation only -- does not catch names, addresses, or other free-text PII |
+| GEMINI_API_KEY exposure re-verified for this module's new code paths | Not re-verified -- relies on Module 5's original .env/gitignore check |
+
+## Notes on the Build
+- The first patch script (apply_module7_patch.py) placed its execution loop before all edits were appended to the list -- the process_record/process_batch edits added afterward never actually ran, despite the script printing "Applied 3/3 edits". Caught by testing the new tracker parameter directly (TypeError: unexpected keyword argument), not assumed working from a clean exit code. Fixed with a second patch script.
+- cost_tracker.py's summary() originally rounded to 4 decimals, which displayed real sub-cent costs (e.g. $0.0000114) as 0.0. Data in BigQuery was correct the whole time -- this was a display bug, caught by cross-checking the printed summary against the actual bq query row.
+- Token count field names (prompt_token_count, candidates_token_count) were verified against a live response.usage_metadata object before trusting them, rather than assumed from general google-genai familiarity.
+
 ## Next Module
-**Module 7** — TBD
+**Module 8** — TBD
