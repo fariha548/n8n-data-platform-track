@@ -6,3 +6,6 @@ logs/
 venv/
 __pycache__/
 *.bak
+.tmp_dagster_home_*
+*.egg-info/
+package-lock.concurrent-update-lock
