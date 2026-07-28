@@ -52,8 +52,8 @@ jobs:
             target: ci
           PROFILE
 
-      - name: dbt compile (generate manifest.json)
-        run: dbt compile --target ci
+      - name: dbt build (full build - baseline for defer)
+        run: dbt build --target ci
 
       - name: Upload manifest as artifact
         uses: actions/upload-artifact@v4
