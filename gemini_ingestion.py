@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -42,6 +43,11 @@ from tenacity import (
     wait_exponential_jitter,
     retry_if_exception_type,
 )
+
+import time
+from cost_tracker import CostTracker, BudgetExceededError
+
+# --- Module 7 patch applied ---
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gemini_ingestion")
@@ -74,6 +80,22 @@ class InputRecord:
 def _input_hash(record: InputRecord) -> str:
     """Dedup key: based on the INPUT, never the LLM output (non-deterministic)."""
     return hashlib.sha256(f"{record.input_id}:{record.text}".encode()).hexdigest()
+
+
+EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+PHONE_PATTERN = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}")
+
+
+def redact_pii(text: str) -> str:
+    """First-pass PII redaction before storing raw LLM responses.
+    Regex-based, catches emails and phone-like number sequences only —
+    does NOT catch names, addresses, or other free-text PII. Documented
+    as a partial mitigation, not a complete one."""
+    if not text:
+        return text
+    text = EMAIL_PATTERN.sub("[REDACTED_EMAIL]", text)
+    text = PHONE_PATTERN.sub("[REDACTED_PHONE]", text)
+    return text
 
 
 class GeminiTransientError(Exception):
@@ -131,7 +153,10 @@ def call_gemini(record: InputRecord) -> dict:
             raise GeminiTransientError(msg) from e
         raise
 
-    return json.loads(response.text)
+    usage = getattr(response, "usage_metadata", None)
+    input_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
+    output_tokens = getattr(usage, "candidates_token_count", 0) if usage else 0
+    return json.loads(response.text), input_tokens, output_tokens
 
 
 # ---- Step 2: validate the shape before trusting it ---------------------------
@@ -162,6 +187,26 @@ def already_ingested(input_hash: str) -> bool:
 
 
 # ---- Step 4: write to BigQuery (success or failure path) --------------------
+def write_to_review_queue(record: InputRecord, result: EnrichmentResult):
+    from datetime import datetime, timezone
+    row = {
+        "input_id": record.input_id,
+        "text": record.text,
+        "category": result.category,
+        "summary": result.summary,
+        "confidence": result.confidence,
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "reviewed": False,
+        "decision": None,
+        "reviewed_at": None,
+    }
+    errors = bq_client.insert_rows_json(
+        f"{BQ_PROJECT}.{BQ_DATASET}.hitl_review_queue", [row]
+    )
+    if errors:
+        raise RuntimeError(f"HITL queue insert failed: {errors}")
+
+
 def write_success(record: InputRecord, input_hash: str, result: EnrichmentResult):
     row = {
         "input_id": record.input_id,
@@ -181,7 +226,7 @@ def write_failure(record: InputRecord, input_hash: str, reason: str, raw: dict |
         "input_id": record.input_id,
         "input_hash": input_hash,
         "reason": reason,
-        "raw_response": json.dumps(raw) if raw else None,
+        "raw_response": redact_pii(json.dumps(raw)) if raw else None,
         "failed_at": datetime.now(timezone.utc).isoformat(),
     }
     errors = bq_client.insert_rows_json(FAILED_TABLE, [row])
@@ -190,29 +235,46 @@ def write_failure(record: InputRecord, input_hash: str, reason: str, raw: dict |
 
 
 # ---- Orchestrating function — this is what the Dagster asset calls ----------
-def process_record(record: InputRecord) -> str:
-    """Returns one of: 'inserted', 'skipped_duplicate', 'failed_validation', 'failed_api'."""
+CONFIDENCE_THRESHOLD = 0.7
+
+
+def process_record(record: InputRecord, tracker=None) -> str:
+    """Returns one of: 'inserted', 'skipped_duplicate', 'failed_validation',
+    'failed_api', 'queued_for_review'."""
     input_hash = _input_hash(record)
 
     if already_ingested(input_hash):
         logger.info("Skipping duplicate input_id=%s", record.input_id)
         return "skipped_duplicate"
 
+    if tracker:
+        tracker.check_before_call()
+
+    start = time.time()
     try:
-        raw = call_gemini(record)
+        raw, input_tokens, output_tokens = call_gemini(record)
     except GeminiFatalError:
-        # Don't log this as a per-record failure — re-raise so process_batch
-        # (or whatever caller) stops the run instead of misattributing a
-        # project-wide problem to this one record's content.
         raise
     except GeminiTransientError as e:
         write_failure(record, input_hash, f"api_error_after_retries: {e}", None)
+        if tracker:
+            tracker.record_call(0, 0, (time.time() - start) * 1000, record.input_id, "failed_api")
         return "failed_api"
 
+    latency_ms = (time.time() - start) * 1000
     result = validate_response(raw)
     if result is None:
         write_failure(record, input_hash, "schema_validation_failed", raw)
+        if tracker:
+            tracker.record_call(input_tokens, output_tokens, latency_ms, record.input_id, "failed_validation")
         return "failed_validation"
+
+    if tracker:
+        tracker.record_call(input_tokens, output_tokens, latency_ms, record.input_id, "success")
+
+    if result.confidence < CONFIDENCE_THRESHOLD:
+        write_to_review_queue(record, result)
+        return "queued_for_review"
 
     write_success(record, input_hash, result)
     return "inserted"
@@ -221,10 +283,12 @@ def process_record(record: InputRecord) -> str:
 def process_batch(records: list[InputRecord]) -> dict:
     """Runs process_record over a batch, returns a summary count. This is
     what the Dagster asset actually invokes and logs as metadata."""
-    summary = {"inserted": 0, "skipped_duplicate": 0, "failed_validation": 0, "failed_api": 0}
+    tracker = CostTracker()
+    summary = {"inserted": 0, "skipped_duplicate": 0, "failed_validation": 0,
+               "failed_api": 0, "queued_for_review": 0}
     for i, record in enumerate(records):
         try:
-            status = process_record(record)
+            status = process_record(record, tracker=tracker)
         except GeminiFatalError as e:
             logger.error(
                 "FATAL: stopping batch after %d/%d records — %s",
@@ -233,6 +297,12 @@ def process_batch(records: list[InputRecord]) -> dict:
             summary["fatal_error"] = str(e)
             summary["processed_before_fatal"] = i
             return summary
+        except BudgetExceededError as e:
+            logger.error("BUDGET: stopping batch after %d/%d records — %s", i, len(records), e)
+            summary["budget_exceeded"] = str(e)
+            summary["processed_before_budget_stop"] = i
+            return summary
         summary[status] += 1
+    summary["cost_summary"] = tracker.summary()
     logger.info("Batch summary: %s", summary)
     return summary
