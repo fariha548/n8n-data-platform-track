@@ -7,3 +7,4 @@ SELECT
   status,
   created_at
 FROM {{ source('thelook_ecommerce', 'order_items') }}
+-- concurrent retest B v3
