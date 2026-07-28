@@ -441,5 +441,68 @@ sequenceDiagram
 - The subprocess contract keeps stdout reserved for a single JSON object (the summary); all logging is redirected to stderr in gemini_batch_runner.py.
 - gemini_ingestion.py calls load_dotenv() explicitly rather than relying on shell environment, since it now runs both as a directly-imported module and as a subprocess invoked by Dagster with its own working directory.
 
+## Module 6
+
+# Module 6 — CI/CD & Pipeline Security Hygiene
+
+## Overview
+This module adds automated pull-request testing (slim CI) and hardens the pipeline's cloud access model — moving from a single broad-access dev identity to a least-privilege, keyless, per-PR-isolated CI setup.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Push to main] --> B[store-manifest.yml]
+    B --> C[Authenticate via Workload Identity Federation]
+    C --> D["dbt build --target ci (full build)"]
+    D --> E[Upload manifest.json as artifact]
+
+    F[Open Pull Request] --> G[dbt-ci.yml]
+    G --> C
+    G --> H[Download main's manifest artifact]
+    H --> I["dbt build --select state:modified+ --defer, schema=dbt_ci_pr&lt;N&gt;"]
+    I --> J{Pass?}
+    J -->|Yes| K[Merge allowed]
+    J -->|No| L[Merge blocked]
+    I --> M[Cleanup: delete temp per-PR dataset]
+```
+
+## Security Model
+- **No long-lived keys**: GitHub Actions authenticates to GCP via **Workload Identity Federation** (OIDC). No key file exists anywhere in this repo or on disk.
+- **Repo-scoped trust**: the WIF provider's attribute condition restricts token exchange to this exact repo — no other GitHub repo can impersonate the CI identity.
+- **Least-privilege CI service account** (`dbt-ci-runner`):
+
+  | Resource | Access |
+  |---|---|
+  | `dbt_ci` dataset | WRITER |
+  | `raw` dataset | READER |
+  | `snapshots` dataset | WRITER *(corrected after real failure — see Notes)* |
+  | `dbt_dev` dataset | No access |
+  | Custom role `dbtCiDatasetCreator` | `bigquery.datasets.create` only, for per-PR schemas |
+
+- **Branch protection on `main`**: requires a passing `dbt Slim CI` status check, enforced for repo admins too (`Do not allow bypassing`). Approval requirement was disabled — GitHub blocks self-approval, and this is a solo-developer repo, so the status check is the enforced gate, not review.
+
+## Slim CI + Per-PR Isolation
+PRs rebuild only what changed (`state:modified+`), in an isolated temporary schema (`dbt_ci_pr<N>`) via a custom `generate_schema_name` macro, deferring unmodified models to main's full baseline (`--defer`). The temporary schema is deleted after each run.
+
+## Self-Check: Tested vs. Assumed
+
+| Behavior | Status |
+|---|---|
+| WIF auth works end-to-end from GitHub Actions to GCP | Tested |
+| Slim CI runs and passes on a real PR | Tested |
+| CI correctly fails and blocks merge on broken SQL | Tested — intentional syntax error caused a failing check and blocked merge |
+| No secret ever committed to git history | Tested — full history grep for key/secret patterns, empty |
+| Branch protection blocks direct push, including for the repo owner | Tested — initially found admins were exempted by default; fixed and reconfirmed with a real rejected push |
+| Two PRs running CI at the same time don't corrupt each other's data | Tested — first attempt genuinely failed (shared `dbt_ci` dataset race, same class of bug as Module 4's `dbt_packages` race); fixed with per-PR schema isolation + `--defer`, then re-tested and confirmed passing |
+| CI service account has correct permissions for every dbt operation it performs | Tested — first attempt under-scoped `snapshots` to read-only, which broke `dbt build`'s snapshot step; corrected to WRITER after real failure, not assumption |
+| Behavior under 3+ simultaneous PRs, or PRs touching the same model | Not tested — only a 2-PR, non-overlapping-model scenario was verified |
+
+## Notes on the Build
+- GCP IAM policy binding at the dataset level required the classic `bq` ACL (JSON) method instead of `bq add-iam-policy-binding`, since this sandbox project returned a "requires allowlisting" error for the newer API.
+- Workload Identity Federation was chosen over a JSON key despite being more complex to set up, to avoid any long-lived credential existing at all.
+- The first version of `store-manifest.yml` used `dbt compile` (SQL generation only, no tables created), which silently meant the baseline dataset never had a full build — this only surfaced under the concurrency test, not from local testing.
+- The CI service account was initially scoped read-only on `snapshots`, which broke dbt's snapshot write step — corrected after a real failure.
+
 ## Next Module
-**Module 6** — TBD
+**Module 7** — TBD
